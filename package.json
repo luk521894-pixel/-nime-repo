@@ -1,0 +1,14 @@
+{
+  "name": "stremio-animeonline-ninja",
+  "version": "1.0.0",
+  "description": "Addon Stremio para ww3.animeonline.ninja — Anime Sub Español HD",
+  "main": "addon.js",
+  "scripts": {
+    "start": "node addon.js",
+    "dev": "node --watch addon.js"
+  },
+  "dependencies": {
+    "stremio-addon-sdk": "^1.6.10"
+  },
+  "license": "MIT"
+}
