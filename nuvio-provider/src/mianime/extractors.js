@@ -7,11 +7,12 @@ function absoluteUrl(value, base) {
   try { return new URL(value, base).toString(); } catch (_) { return value; }
 }
 
-function fetchText(url) {
+function fetchText(url, extraHeaders) {
   return fetch(url, {
     headers: {
       'User-Agent': 'Mozilla/5.0 (NuvioProvider/1.1)',
-      'Accept': 'text/html,application/xhtml+xml'
+      'Accept': 'text/html,application/xhtml+xml',
+      ...(extraHeaders || {})
     }
   }).then((response) => {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -95,10 +96,28 @@ function extractLatanimePlayers(html) {
     const name = match[2].replace(/<[^>]+>/g, '').trim();
     const embed = decodeBase64(match[1]);
     if (!embed || !ALLOWED_EMBED_HOSTS.test(embed)) continue;
-    const url = `https://latanime.org/reproductor?url=${encodeURIComponent(embed)}`;
-    if (!players.some((item) => item.url === url)) players.push({ name, url });
+    if (!players.some((item) => item.embed === embed)) players.push({ name, embed });
   }
   return players;
+}
+
+function resolveDirectPlayer(player) {
+  const embed = player.embed;
+  if (/mp4upload/i.test(embed)) {
+    return fetchText(embed, { Referer: `${LATANIME}/` }).then((html) => {
+      const match = html.match(/(?:src|file)\s*:\s*["'](https?:\/\/[^"']+\.(?:mp4|m3u8)(?:\?[^"']*)?)["']/i);
+      if (!match) return null;
+      return { url: match[1], name: player.name, referer: embed };
+    });
+  }
+  if (/uqload/i.test(embed)) {
+    return fetchText(embed, { Referer: `${LATANIME}/` }).then((html) => {
+      const match = html.match(/(?:file|src)\s*[:=]\s*["'](https?:\/\/[^"']+\.(?:mp4|m3u8)(?:\?[^"']*)?)["']/i);
+      if (!match) return null;
+      return { url: match[1], name: player.name, referer: embed };
+    });
+  }
+  return Promise.resolve(null);
 }
 
 function getStreamsFromLatanime(tmdbId, mediaType, season, episode, suppliedTitle) {
@@ -110,13 +129,15 @@ function getStreamsFromLatanime(tmdbId, mediaType, season, episode, suppliedTitl
       return fetchText(animeUrl).then((animeHtml) => {
         const episodeUrl = findEpisodePage(animeHtml, episode, season);
         if (!episodeUrl) return [];
-        return fetchText(episodeUrl).then((episodeHtml) => extractLatanimePlayers(episodeHtml).map((player, index) => ({
-          name: `Latanime - ${player.name || `Servidor ${index + 1}`}`,
+        return fetchText(episodeUrl).then((episodeHtml) => Promise.all(
+          extractLatanimePlayers(episodeHtml).map((player) => resolveDirectPlayer(player))
+        ).then((resolved) => resolved.filter(Boolean).map((player) => ({
+          name: `Latanime - ${player.name}`,
           title: episode ? `Episodio ${episode}` : title,
           url: player.url,
-          quality: 'HD',
-          headers: { Referer: `${LATANIME}/` }
-        })));
+          quality: /m3u8/i.test(player.url) ? '1080p' : 'HD',
+          headers: { Referer: player.referer, 'User-Agent': 'Mozilla/5.0' }
+        }))));
       });
     });
   });
