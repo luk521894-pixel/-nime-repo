@@ -22,7 +22,7 @@ function getStreams(tmdbId, mediaType, season, episode, suppliedTitle) {
     const streams = [];
     const seen = {};
     results.forEach((items) => items.forEach((stream) => {
-      if (stream && stream.url && !seen[stream.url]) {
+      if (stream && typeof stream.title === 'string' && /^https?:\/\//i.test(stream.url || '') && !seen[stream.url]) {
         seen[stream.url] = true;
         streams.push(stream);
       }

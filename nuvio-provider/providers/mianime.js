@@ -25,7 +25,11 @@ var require_extractors = __commonJS({
   "nuvio-provider/src/mianime/extractors.js"(exports2, module2) {
     var TMDB_API_KEY = "1865f43a0549ca50d341dd9ab8b29f49";
     var LATANIME = "https://latanime.org";
-    var ALLOWED_EMBED_HOSTS = /(?:filemoon|dsvplay|mega\.nz|uqload|luluv|mxdrop|listeamed|voe\.sx|mp4upload)/i;
+    var BROWSER_HEADERS = {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/132.0.0.0 Safari/537.36",
+      "Accept-Language": "es-ES,es;q=0.9,en;q=0.8"
+    };
+    var EMBED_HOSTS = /(?:filemoon|dsvplay|mega\.nz|uqload|luluv|mxdrop|listeamed|voe\.sx|mp4upload)/i;
     function absoluteUrl(value, base) {
       if (!value)
         return null;
@@ -37,139 +41,227 @@ var require_extractors = __commonJS({
     }
     function fetchText(url, extraHeaders) {
       return fetch(url, {
-        headers: __spreadValues({
-          "User-Agent": "Mozilla/5.0 (NuvioProvider/1.1)",
-          "Accept": "text/html,application/xhtml+xml"
-        }, extraHeaders || {})
+        headers: __spreadValues(__spreadValues({}, BROWSER_HEADERS), extraHeaders || {})
       }).then((response) => {
-        if (!response.ok)
-          throw new Error(`HTTP ${response.status}`);
+        if (!response || !response.ok)
+          throw new Error(`HTTP ${response ? response.status : 0}`);
         return response.text();
       });
     }
     function fetchJson(url) {
-      return fetch(url, { headers: { "User-Agent": "Mozilla/5.0 (NuvioProvider/1.1)" } }).then((response) => {
-        if (!response.ok)
-          throw new Error(`HTTP ${response.status}`);
+      return fetch(url, { headers: BROWSER_HEADERS }).then((response) => {
+        if (!response || !response.ok)
+          throw new Error(`HTTP ${response ? response.status : 0}`);
         return response.json();
       });
     }
-    function decodeBase64(value) {
-      try {
-        return atob(value);
-      } catch (_) {
-        return null;
-      }
+    function cleanTmdbId(tmdbId) {
+      return String(tmdbId || "").replace(/^tmdb:/i, "").split(":")[0].trim();
     }
     function normalize(value) {
-      return String(value || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+      return String(value || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/×/g, "x").replace(/[^a-z0-9]+/g, " ").trim();
     }
     function titleFromArgument(value) {
       if (!value)
         return "";
       if (typeof value === "string")
-        return value;
+        return value.trim();
       if (typeof value === "object")
-        return value.title || value.name || value.originalTitle || "";
+        return String(value.title || value.name || value.originalTitle || "").trim();
       return "";
     }
-    function resolveTitle(tmdbId, mediaType, suppliedTitle) {
+    function tmdbTitles(tmdbId, mediaType, suppliedTitle) {
       const direct = titleFromArgument(suppliedTitle);
       if (direct)
-        return Promise.resolve(direct);
+        return Promise.resolve([direct]);
       const kind = mediaType === "movie" ? "movie" : "tv";
-      const cleanId = String(tmdbId || "").replace(/^tmdb:/i, "").split(":")[0];
-      return fetchJson(`https://api.themoviedb.org/3/${kind}/${encodeURIComponent(cleanId)}?api_key=${TMDB_API_KEY}&language=es-ES`).then((data) => data.title || data.name || data.original_title || data.original_name || "");
+      const id = cleanTmdbId(tmdbId);
+      if (!id)
+        return Promise.resolve([]);
+      return fetchJson(`https://api.themoviedb.org/3/${kind}/${encodeURIComponent(id)}?api_key=${TMDB_API_KEY}&language=es-ES`).then((data) => [...new Set([
+        data.name,
+        data.title,
+        data.original_name,
+        data.original_title
+      ].filter(Boolean).map(String))]);
     }
-    function findAnimePage(html, title) {
-      const wanted = normalize(title);
-      const links = [];
-      const regex = /<a[^>]+href=["']([^"']*\/anime\/[^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+    function decodeBase64(value) {
+      try {
+        const normalized = String(value || "").replace(/-/g, "+").replace(/_/g, "/");
+        return atob(normalized + "=".repeat((4 - normalized.length % 4) % 4));
+      } catch (_) {
+        return null;
+      }
+    }
+    function scoreTitle(query, candidate) {
+      const stripTags = (value) => normalize(value).replace(/\b(latino|castellano|catalan|japones|japanese)\b/g, " ").replace(/\b(?:s|season|temporada|parte|part)\s*\d+\b/g, " ").replace(/\s+/g, " ").trim();
+      const q = stripTags(query);
+      const c = stripTags(candidate);
+      if (!q || !c)
+        return 0;
+      if (q === c)
+        return 100;
+      if (c.includes(q) || q.includes(c))
+        return 70;
+      return q.split(" ").filter((part) => part.length > 2 && c.includes(part)).length;
+    }
+    function parseSearchResults(html) {
+      const results = [];
+      const anchorRe = /<a\b([^>]*\/anime\/[^>]*>[\s\S]*?<\/a>)/gi;
       let match;
-      while (match = regex.exec(html)) {
-        const text = normalize(match[2].replace(/<[^>]+>/g, " "));
-        const url = absoluteUrl(match[1], LATANIME);
-        if (!url || links.some((item) => item.url === url))
+      while (match = anchorRe.exec(html)) {
+        const block = match[1];
+        const href = block.match(/href=["']([^"']*\/anime\/[^"']+)["']/i);
+        if (!href)
           continue;
-        links.push({ url, text, score: text.includes(wanted) ? 3 : wanted.split(" ").filter((word) => word.length > 2 && text.includes(word)).length });
+        const slug = href[1].match(/\/anime\/([^/?#"']+)/i);
+        if (!slug)
+          continue;
+        const h3 = block.match(/<h3[^>]*>([\s\S]*?)<\/h3>/i);
+        const title = (h3 ? h3[1] : block.replace(/<[^>]+>/g, " ")).replace(/&amp;/gi, "&").replace(/\s+/g, " ").trim();
+        const label = block.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+        const item = {
+          title,
+          slug: slug[1],
+          url: absoluteUrl(href[1], LATANIME),
+          type: /pel[ií]cula|\bmovie\b|\bfilm\b/i.test(label) ? "movie" : "series"
+        };
+        if (item.url && !results.some((entry) => entry.url === item.url))
+          results.push(item);
       }
-      links.sort((a, b) => b.score - a.score);
-      return links.length && links[0].score > 0 ? links[0].url : null;
+      return results;
     }
-    function findEpisodePage(html, episode, season) {
-      const wanted = String(Number(episode || 1));
-      const seasonText = season ? `s${Number(season)}` : "";
-      const regex = /<a[^>]+href=["']([^"']*\/ver\/[^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
-      const matches = [];
+    function searchLatanime(query) {
+      const url = `${LATANIME}/buscar?q=${encodeURIComponent(query)}`;
+      return fetchText(url).then((html) => {
+        const results = parseSearchResults(html);
+        if (results.length)
+          return results;
+        return fetchText(`${LATANIME}/?s=${encodeURIComponent(query)}`).then(parseSearchResults);
+      });
+    }
+    function chooseAnime(results, query, mediaType) {
+      const candidates = results.filter((item) => !mediaType || mediaType === "movie" || item.type === "series");
+      const pool = candidates.length ? candidates : results;
+      return pool.slice().sort((a, b) => scoreTitle(query, b.title) - scoreTitle(query, a.title))[0] || null;
+    }
+    function episodeNumber(href, text) {
+      const value = `${href} ${text}`.match(/(?:episodio|capitulo|episode)[^0-9]{0,8}0*(\d+)/i);
+      return value ? Number(value[1]) : null;
+    }
+    function listEpisodes(html) {
+      const episodes = [];
+      const re = /<a\b([^>]*href=["'][^"']*\/ver\/[^"']+["'][^>]*)>/gi;
       let match;
-      while (match = regex.exec(html)) {
-        const text = normalize(match[2].replace(/<[^>]+>/g, " "));
-        const href = match[1];
-        const slug = normalize(href);
-        const hasEpisode = new RegExp(`(?:episodio|capitulo|episode)[ -_]*0*${wanted}(?:[^0-9]|$)`, "i").test(`${text} ${slug}`);
-        const hasSeason = !seasonText || Number(season) === 1 || slug.includes(seasonText) || text.includes(seasonText);
-        if (hasEpisode && hasSeason)
-          matches.push(absoluteUrl(href, LATANIME));
+      while (match = re.exec(html)) {
+        const block = match[1];
+        const href = block.match(/href=["']([^"']*\/ver\/[^"']+)["']/i);
+        if (!href)
+          continue;
+        const number = episodeNumber(href[1], "");
+        if (!number || episodes.some((entry) => entry.number === number))
+          continue;
+        episodes.push({ number, url: absoluteUrl(href[1], LATANIME) });
       }
-      return matches[0] || null;
+      return episodes.sort((a, b) => a.number - b.number);
     }
-    function extractLatanimePlayers(html) {
+    function extractPlayers(html) {
       const players = [];
-      const regex = /<a[^>]+class=["'][^"']*play-video[^"']*["'][^>]+data-player=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+      const re = /<a\b([^>]*class=["'][^"']*play-video[^"'][^>]*data-player=["'][^"']+["'][^>]*)>([\s\S]*?)<\/a>/gi;
       let match;
-      while (match = regex.exec(html)) {
-        const name = match[2].replace(/<[^>]+>/g, "").trim();
-        const embed = decodeBase64(match[1]);
-        if (!embed || !ALLOWED_EMBED_HOSTS.test(embed))
+      while (match = re.exec(html)) {
+        const attrs = match[1];
+        const encoded = attrs.match(/data-player=["']([^"']+)["']/i);
+        if (!encoded)
           continue;
+        const embed = decodeBase64(encoded[1]);
+        if (!embed || !EMBED_HOSTS.test(embed))
+          continue;
+        const name = match[2].replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim() || "Servidor";
         if (!players.some((item) => item.embed === embed))
           players.push({ name, embed });
       }
       return players;
     }
-    function resolveDirectPlayer(player) {
+    function normalizeVideoUrl(value) {
+      return String(value || "").replace(/\\u0026/g, "&").replace(/\\\//g, "/").replace(/&amp;/g, "&").trim();
+    }
+    function likelyVideo(value) {
+      return /\.(?:mp4|m3u8)(?:[?#].*)?$/i.test(value || "");
+    }
+    function unpackDeanEdwards(source) {
+      const match = String(source || "").match(/eval\(function\(p,a,c,k,e(?:,d)?\)\{[\s\S]*?\}\((['"])([\s\S]*?)\2,(\d+),(\d+),\[(['"])([\s\S]*?)\6\.split\(['"]\|['"]\)(?:,0,\{\})?\)\)/);
+      if (!match)
+        return null;
+      let payload = match[3];
+      const radix = Number(match[4]);
+      let count = Number(match[5]);
+      const words = match[7].split("|");
+      const encode = (number) => {
+        if (!number)
+          return "0";
+        let value = "";
+        while (number > 0) {
+          const digit = number % radix;
+          value = String.fromCharCode(digit < 36 ? digit < 10 ? 48 + digit : 87 + digit : 65 + digit - 36) + value;
+          number = Math.floor(number / radix);
+        }
+        return value;
+      };
+      while (count--) {
+        if (words[count])
+          payload = payload.replace(new RegExp(`\\b${encode(count)}\\b`, "g"), words[count]);
+      }
+      return payload;
+    }
+    function resolvePlayer(player) {
       const embed = player.embed;
-      if (/mp4upload/i.test(embed)) {
-        return fetchText(embed, { Referer: `${LATANIME}/` }).then((html) => {
-          const match = html.match(/(?:src|file)\s*:\s*["'](https?:\/\/[^"']+\.(?:mp4|m3u8)(?:\?[^"']*)?)["']/i);
-          if (!match)
-            return null;
-          return { url: match[1], name: player.name, referer: embed };
-        });
+      if (/\.mp4(?:[?#]|$)|\.m3u8(?:[?#]|$)/i.test(embed)) {
+        return Promise.resolve({ url: embed, name: player.name, referer: LATANIME });
       }
-      if (/uqload/i.test(embed)) {
-        return fetchText(embed, { Referer: `${LATANIME}/` }).then((html) => {
-          const match = html.match(/(?:file|src)\s*[:=]\s*["'](https?:\/\/[^"']+\.(?:mp4|m3u8)(?:\?[^"']*)?)["']/i);
-          if (!match)
-            return null;
-          return { url: match[1], name: player.name, referer: embed };
-        });
-      }
-      return Promise.resolve(null);
+      return fetchText(embed, { Referer: `${LATANIME}/` }).then((html) => {
+        let value = html.match(/(?:src|file)\s*[:=]\s*["'](https?:\/\/[^"']+\.(?:mp4|m3u8)(?:\?[^"']*)?)["']/i);
+        if (!value)
+          value = html.match(/https?:\/\/[^"'\s]+\.(?:mp4|m3u8)(?:\?[^"'\s]*)?/i);
+        if (!value && /uqload/i.test(embed)) {
+          const unpacked = unpackDeanEdwards(html);
+          if (unpacked)
+            value = unpacked.match(/https?:\/\/[^"'\s]+\.(?:mp4|m3u8)(?:\?[^"'\s]*)?/i);
+        }
+        const url = normalizeVideoUrl(value && (value[1] || value[0]));
+        return likelyVideo(url) ? { url, name: player.name, referer: embed } : null;
+      });
     }
     function getStreamsFromLatanime2(tmdbId, mediaType, season, episode, suppliedTitle) {
-      return resolveTitle(tmdbId, mediaType, suppliedTitle).then((title) => {
-        if (!title)
-          return [];
-        return fetchText(`${LATANIME}/?s=${encodeURIComponent(title)}`).then((searchHtml) => {
-          const animeUrl = findAnimePage(searchHtml, title);
-          if (!animeUrl)
-            return [];
-          return fetchText(animeUrl).then((animeHtml) => {
-            const episodeUrl = findEpisodePage(animeHtml, episode, season);
-            if (!episodeUrl)
-              return [];
-            return fetchText(episodeUrl).then((episodeHtml) => Promise.all(
-              extractLatanimePlayers(episodeHtml).map((player) => resolveDirectPlayer(player))
-            ).then((resolved) => resolved.filter(Boolean).map((player) => ({
-              name: `Latanime - ${player.name}`,
-              title: episode ? `Episodio ${episode}` : title,
-              url: player.url,
-              quality: /m3u8/i.test(player.url) ? "1080p" : "HD",
-              headers: { Referer: player.referer, "User-Agent": "Mozilla/5.0" }
-            }))));
-          });
-        });
+      const wantedEpisode = Number(episode || 1);
+      const wantedSeason = Number(season || 1);
+      return tmdbTitles(tmdbId, mediaType, suppliedTitle).then((titles) => {
+        function tryTitle(index) {
+          if (index >= titles.length)
+            return Promise.resolve([]);
+          const query = wantedSeason > 1 ? `${titles[index]} ${wantedSeason}` : titles[index];
+          return searchLatanime(query).then((results) => {
+            const anime = chooseAnime(results, query, mediaType);
+            if (!anime)
+              return tryTitle(index + 1);
+            return fetchText(anime.url).then((animeHtml) => {
+              const episodes = listEpisodes(animeHtml);
+              const selected = episodes.find((item) => item.number === wantedEpisode);
+              if (!selected)
+                return tryTitle(index + 1);
+              return fetchText(selected.url).then((episodeHtml) => Promise.all(
+                extractPlayers(episodeHtml).map((player) => resolvePlayer(player).catch(() => null))
+              ).then((resolved) => resolved.filter(Boolean).map((player) => ({
+                title: `${anime.title} Ep. ${selected.number}`,
+                name: `Latanime - ${player.name}`,
+                url: player.url,
+                quality: /m3u8/i.test(player.url) ? "1080p" : "HD",
+                headers: { Referer: player.referer, "User-Agent": BROWSER_HEADERS["User-Agent"] }
+              }))));
+            });
+          }).then((streams) => streams.length ? streams : tryTitle(index + 1)).catch(() => tryTitle(index + 1));
+        }
+        return tryTitle(0);
       });
     }
     function getStreamsFromAnimeAV12() {
@@ -204,7 +296,7 @@ function getStreams(tmdbId, mediaType, season, episode, suppliedTitle) {
     const streams = [];
     const seen = {};
     results.forEach((items) => items.forEach((stream) => {
-      if (stream && stream.url && !seen[stream.url]) {
+      if (stream && typeof stream.title === "string" && /^https?:\/\//i.test(stream.url || "") && !seen[stream.url]) {
         seen[stream.url] = true;
         streams.push(stream);
       }
