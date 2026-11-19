@@ -51,8 +51,9 @@ function titleFromArgument(value) {
 function resolveTitle(tmdbId, mediaType, suppliedTitle) {
   const direct = titleFromArgument(suppliedTitle);
   if (direct) return Promise.resolve(direct);
-  const kind = mediaType === 'tv' ? 'tv' : 'movie';
-  return fetchJson(`https://api.themoviedb.org/3/${kind}/${encodeURIComponent(tmdbId)}?api_key=${TMDB_API_KEY}&language=es-ES`)
+  const kind = mediaType === 'movie' ? 'movie' : 'tv';
+  const cleanId = String(tmdbId || '').replace(/^tmdb:/i, '').split(':')[0];
+  return fetchJson(`https://api.themoviedb.org/3/${kind}/${encodeURIComponent(cleanId)}?api_key=${TMDB_API_KEY}&language=es-ES`)
     .then((data) => data.title || data.name || data.original_title || data.original_name || '');
 }
 

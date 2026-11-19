@@ -77,8 +77,9 @@ var require_extractors = __commonJS({
       const direct = titleFromArgument(suppliedTitle);
       if (direct)
         return Promise.resolve(direct);
-      const kind = mediaType === "tv" ? "tv" : "movie";
-      return fetchJson(`https://api.themoviedb.org/3/${kind}/${encodeURIComponent(tmdbId)}?api_key=${TMDB_API_KEY}&language=es-ES`).then((data) => data.title || data.name || data.original_title || data.original_name || "");
+      const kind = mediaType === "movie" ? "movie" : "tv";
+      const cleanId = String(tmdbId || "").replace(/^tmdb:/i, "").split(":")[0];
+      return fetchJson(`https://api.themoviedb.org/3/${kind}/${encodeURIComponent(cleanId)}?api_key=${TMDB_API_KEY}&language=es-ES`).then((data) => data.title || data.name || data.original_title || data.original_name || "");
     }
     function findAnimePage(html, title) {
       const wanted = normalize(title);
