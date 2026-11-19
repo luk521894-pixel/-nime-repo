@@ -5,10 +5,15 @@
   "main": "addon.js",
   "scripts": {
     "start": "node addon.js",
-    "dev": "node --watch addon.js"
+    "dev": "node --watch addon.js",
+    "build:nuvio": "node nuvio-provider/build.js mianime",
+    "serve:nuvio": "node nuvio-provider/server.js"
   },
   "dependencies": {
     "stremio-addon-sdk": "^1.6.10"
+  },
+  "devDependencies": {
+    "esbuild": "^0.20.0"
   },
   "license": "MIT"
 }
