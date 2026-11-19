@@ -11,11 +11,11 @@ function safe(label, fn) {
   });
 }
 
-function getStreams(tmdbId, mediaType, season, episode) {
+function getStreams(tmdbId, mediaType, season, episode, suppliedTitle) {
   const jobs = [
-    safe('Latanime', () => getStreamsFromLatanime(tmdbId, mediaType, season, episode)),
-    safe('AnimeAV1', () => getStreamsFromAnimeAV1(tmdbId, mediaType, season, episode)),
-    safe('TodoAnime', () => getStreamsFromTodoAnime(tmdbId, mediaType, season, episode))
+    safe('Latanime', () => getStreamsFromLatanime(tmdbId, mediaType, season, episode, suppliedTitle)),
+    safe('AnimeAV1', () => getStreamsFromAnimeAV1(tmdbId, mediaType, season, episode, suppliedTitle)),
+    safe('TodoAnime', () => getStreamsFromTodoAnime(tmdbId, mediaType, season, episode, suppliedTitle))
   ];
 
   return Promise.all(jobs).then((results) => {

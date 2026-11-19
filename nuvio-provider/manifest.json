@@ -1,12 +1,12 @@
 {
   "name": "Mi Repositorio de Anime",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "scrapers": [
     {
       "id": "mi-anime-multi",
       "name": "Mi Anime Multi-Fuente",
       "description": "Proveedor Nuvio modular para fuentes autorizadas de anime.",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "author": "luk521894-pixel",
       "supportedTypes": ["movie", "tv"],
       "filename": "providers/mianime.js",
